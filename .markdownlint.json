@@ -1,19 +1,5 @@
 {
-    "blanks-around-fences": false,
-    "no-inline-html": false,
-    "no-missing-space-atx": false,
-    "no-multiple-space-atx": false,
-    "no-multiple-space-blockquote": false,
-    "no-multiple-space-closed-code": false,
-    "no-multiple-space-indented-code": false,
-    "no-multiple-space-links": false,
-    "no-multiple-space-lists": false,
-    "no-multiple-space-tables": false,
     "no-trailing-spaces": false,
-    "no-inline-padding": false,
-    "no-space-in-emphasis": false,
-    "no-space-in-links": false,
-    "no-space-in-code": false,
-    "no-space-in-blockquote": false,
+    "blanks-around-fences": false,
     "no-multiple-blanks": false
 }
