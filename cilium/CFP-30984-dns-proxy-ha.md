@@ -197,6 +197,10 @@ We will need to read from couple of bpf maps to get the endpoint ID and identity
 
 * Low level interactions from components external to cilium agent.
 
+#### Q: Why did we choose to read from bpf maps ?
+
+The reason we chose to read from bpf maps is because the DNS proxy should be able to resolve the DNS queries even when agent is down. The bpf maps are the source of truth for cilium agent and are updated in real time. So, reading from bpf maps ensures that the DNS proxy is always in sync with the cilium agent.
+
 ### Flag to disable built-in proxy
 
 Adding a flag(`--disable-builtin-dns-proxy`) to cilium agent to disable the built in dns proxy allows standlone dns proxy to run its independent lifecycle.
