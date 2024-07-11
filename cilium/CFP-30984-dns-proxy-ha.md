@@ -61,14 +61,8 @@ message Result {
 
 Method : UpdatesDNSRules
 
-_rpc UpdatesDNSRules(Request) returns (stream DNSPolicyRules){}_
+_rpc UpdatesDNSRules(stream DNSPolicyRules) returns (Result){}_
 Request :
-```
-message Request {
-    message string = 1;
-}
-```
-Response :
 ```
 message FQDNSelector {
   string match_name = 1;
@@ -89,6 +83,13 @@ message DNSPolicyRules {
 }
 ```
 
+Response :
+```
+message Result  {
+    message string = 1;
+}
+```
+
 ### Tracking policy updates to SDP instances
 
 Since SDP can be deployed out of band and users can choose to completely disable built-in proxy to run multiple instances of SDP, agent should be prepared to handle multiple instances. In order to ensure all instances  have upto date policy revisions, agent will maintain a mapping of ACKed policy revision numbers against stream ID.
@@ -100,7 +101,7 @@ Since policy revision numbers are reset when agent restarts, we need to uncondit
 
 We need the DNS Rules for the Standalone DNS proxy to enforce the L7 DNS policy. The policy are the source of turth for the rules and are propagated to the agent when we apply the policy. We explore the options to get the DNS rules for the DNS proxy.
 
-#### Option 1: Running the GRPC sever in the agent[Recommended]
+#### Running the GRPC sever in the agent
 
 We can run a gRPC server in the agent to serve the DNS rules to the DNS proxy. SDP will be responsible for creating the connection with the agent. And once SDP establish a connection agent can keep track of the stream and send the DNS rules to the SDP. Agent can then reuse the same stream to send updates in the DNS rules.
 In case, cilium agent is still not up, SDP will keep trying to connect to the agent until the connection is established.
@@ -119,38 +120,9 @@ In case, cilium agent is still not up, SDP will keep trying to connect to the ag
 ![standalone-dns-proxy-up-scenario](./images/standalone-dns-proxy-up-scenario.png)
 ![standalone-dns-proxy-down-scenario](./images/standalone-dns-proxy-down-scenario.png)
 
-#### Option 2: Running the GRPC server in the SDP as well
+### Reading from file system on startup
 
-SDP can also runs a grpc server so that the agent can send the DNS rules to the SDP when the rules are ready instead of keeping alive the stream. On startup/restart SDP follows the same pattern as that of single grpc server, it asks for DNS rules from Cilium agent. For policy updates, agent just sends the data to server running at SDP.
-
-##### Pros
-
-* No overhead on the agent to keep a track of the open streams with the SDP.
-* Better fault isolation(one stream failing does not affect the other streams)
-
-##### Cons
-
-* Resource intensive as we are creating a new stream for every update.
-* If multiple SDP instance are running, we need to handle multiple grpc server on same address:port and send updates to each server from a agent.
-
-#### Option 3: Reading the ep_config.json file in the SDP
-
-We can read the DNS rules from the `ep_config.json` file. SDP will listen on the changes to the file and update the DNS rules accordingly. Cilium agent is the only one that writes to the file. Currently DNS rules are stored in the ep_config.json lazily as we only need those when DNS proxy restarts. We need to make sure that the DNS rules are updated in the file as soon as the policy is applied.
-Storing the dns rules will require identities associated with the selector labels as current dns proxy implementation uses that to filter the DNS traffic OR will need to change the way dns porxy filters the DNS requests.
-
-##### Pros
-
-* No need to run a gRPC server in the agent/SDP.
-* Removes the dependency on the agent to get the DNS rules.
-
-##### Cons
-
-* Will change the current implmentation/flow of flitering the dns requests.
-* Reading a file might not be as efficient as reading from a gRPC server.
-
-### Q : Why did we choose grpc option over reading from filesystem?
-
-The main reason to choose the grpc option is that current implementation updates the DNS rules lazily(not when the policy is applied). So we cannot depend on the file system to provide us the current DNS rules. In order to read from the filesystem, we need to make sure that the DNS rules are updated in the file as soon as the policy is applied. This will require a change in the current implementation of the DNS proxy. Also, reading from the filesystem might not be as efficient as reading from a grpc server.
+SDP can read from the file system(`ep_config.json`) and get the DNS Rules on bootup. In case, it is able to connect to cilium agent, cilium agent will send the current snapshot of the dns rules to sdp. In case, cilium agent is down, SDP can continue serving the DNS requests based on DNS rules retrieved from the filesystem on bootup.
 
 ### Q : Reason behind lazily updating the DNS rules in the ep_config.json file?
 
