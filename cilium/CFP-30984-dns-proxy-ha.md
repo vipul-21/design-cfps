@@ -16,7 +16,7 @@ This CFP introduces a standalone DNS proxy that can be run alongside cilium agen
 
 ## Motivation
 
-Users rely on toFQDN policies to enforce network policies against traffic to remote destinations outside the cluster, typically to blob storage / other services on the internet. Rolling out cilium agent should not result in traffic being dropped. Introducing a high availablility (HA) mode will allow for adoption of toFQDN network policies in critical environments.
+Users rely on toFQDN policies to enforce network policies against traffic to remote destinations outside the cluster, typically to blob storage / other services on the internet. Rolling out cilium agent should not result in traffic being dropped. Introducing a high availability (HA) mode will allow for adoption of toFQDN network policies in critical environments.
 
 ## Goals
 
@@ -34,12 +34,13 @@ Users rely on toFQDN policies to enforce network policies against traffic to rem
 
 ![Standalone DNS proxy Overview](./images/standalone-dns-proxy-overview.png)
 
-There are two parts to enforcing toFQDN network policy. L4 policy enforcement against IP adresses resolved from a FQDN and policy enforcement on DNS requests (L7 DNS policy). In order to enforce L4 policy, per endpoint policy bpf maps need to be updated. We'd like to avoid multiple processes writing entries to policy maps, so the standalone DNS proxy (SDP) needs a mechansim to notify agent of newly resolved FQDN <> IP address mappings. This CFP proposes exposing a new gRPC streaming API from cilium agent to do this. Since the connection is bi-directional, cilium agent can re-use the same connection to notify the SDP of L7 DNS policy changes.
+There are two parts to enforcing toFQDN network policy. L4 policy enforcement against IP addresses resolved from a FQDN and policy enforcement on DNS requests (L7 DNS policy). In order to enforce L4 policy, per endpoint policy bpf maps need to be updated. We'd like to avoid multiple processes writing entries to policy maps, so the standalone DNS proxy (SDP) needs a mechanism to notify agent of newly resolved FQDN <> IP address mappings. This CFP proposes exposing a new gRPC streaming API from cilium agent to do this. Since the connection is bi-directional, cilium agent can re-use the same connection to notify the SDP of L7 DNS policy changes.
 Additionally SDP also needs to translate IP address to endpoint ID and identity in order to enforce policy by reusing the logic from agent's DNS proxy. Our proposal involves retrieving the endpoint and identity data directly from the `cilium_lxc` and `cilium_ipcache` BPF maps, respectively.
 
 ### RPC Methods
 
 Method : UpdateMappings
+Description: SDP will be sending the DNS responses to the cilium agent through the following gRPC stream. SDP will be creating the stream and reusing the same stream to send the responses.
 
 _rpc UpdatesMappings(steam FQDNMapping) returns (Result){}_
 Request :
@@ -60,20 +61,20 @@ message Result {
 ```
 
 Method : UpdatesDNSRules
+Description: Cilium agent will be sending the DNS rules to the SDP through the following gRPC stream. 
 
 _rpc UpdatesDNSRules(stream DNSPolicyRules) returns (Result){}_
 Request :
 ```
-message FQDNSelector {
+message PortRules {
   string match_name = 1;
   string match_pattern = 2;
 }
 
 message DNSPolicyRule {
-  string selector_string = 1;
-  repeated FQDNSelector port_rules= 2;
-  repeated string match_labels = 3;
-  repeated uint32 selections = 4;
+  string key = 1; // key is the string form of the port rules
+  repeated PortRules port_rules= 2;
+  repeated uint32 identities_selected = 3; // identities selected by these rules
 }
 
 message DNSPolicyRules {
@@ -90,6 +91,7 @@ message Result  {
 }
 ```
 
+Note: since the gRPC bytes stream has a limit, we might need to chunk the data and send it in multiple requests.
 ### Tracking policy updates to SDP instances
 
 Since SDP can be deployed out of band and users can choose to completely disable built-in proxy to run multiple instances of SDP, agent should be prepared to handle multiple instances. In order to ensure all instances  have upto date policy revisions, agent will maintain a mapping of ACKed policy revision numbers against stream ID.
@@ -99,7 +101,7 @@ Since policy revision numbers are reset when agent restarts, we need to uncondit
 
 ### Getting the DNS Rules
 
-We need the DNS Rules for the Standalone DNS proxy to enforce the L7 DNS policy. The policy are the source of turth for the rules and are propagated to the agent when we apply the policy. We explore the options to get the DNS rules for the DNS proxy.
+We need the DNS Rules for the Standalone DNS proxy to enforce the L7 DNS policy. The policy are the source of truth for the rules and are propagated to the agent when we apply the policy. We explore the options to get the DNS rules for the DNS proxy.
 
 #### Running the GRPC sever in the agent
 
@@ -109,16 +111,14 @@ In case, cilium agent is still not up, SDP will keep trying to connect to the ag
 ##### Pros
 
 * SDP instances has the responsibility to connect to the agent.
-* Reusing the same stream will be effiecient in terms of resources as we are not creating/destroying the stream for every update.
+* Reusing the same stream will be efficient in terms of resources as we are not creating/destroying the stream for every update.
 
 ##### Cons
 
 * An overhead on the cilium agent to keep track of the streams of the connected SDP instances.
-* Streams are not thread safe, so if we have multiple threads using the same stream we will need to handle the synchronization.
-* If SDP in future decides to handle policy updates as well, it will be tricky. SDP needs to keep trying to sync with CA as well as CA needs to keep a track of the SDP instances to send updates.
+* Streams are not thread safe, so if we have multiple threads using the same stream we will need to handle the synchronization.(We will have to keep this mind during the implementation phase)
 
-![standalone-dns-proxy-up-scenario](./images/standalone-dns-proxy-up-scenario.png)
-![standalone-dns-proxy-down-scenario](./images/standalone-dns-proxy-down-scenario.png)
+![standalone-dns-proxy-dnsrules-scenario](./images/standalone-dns-proxy-dnsrules-scenario.png)
 
 ### Reading from file system on startup
 
@@ -136,7 +136,7 @@ Get the endpoint ID and identity for a given IP address by making a gRPC call to
 
 ##### Pros
 
-* Avoid interacting with low-level details. Simpler to maintain and stay upto date with any datapath changes.
+* Avoid interacting with low-level details. Simpler to maintain and stay up to date with any datapath changes.
 * All data can be cached in-memory, in an event of agent being unavailable, SDP can lookup from in-memory cache
 
 ##### Cons
@@ -151,7 +151,7 @@ Similar to envoy, SDP can listen to ipcache updates and maintain a local cache o
 
 ##### Pros
 
-* Simpler to maintain and stay upto date with any new ip<>identity changes.
+* Simpler to maintain and stay up to date with any new ip<>identity changes.
 * All data can be cached in-memory, in an event of agent being unavailable, SDP can lookup from in-memory cache
 
 ##### Cons
@@ -159,7 +159,7 @@ Similar to envoy, SDP can listen to ipcache updates and maintain a local cache o
 * Need a mechanism for reconciling the cache in case of SDP restarts.
 * SDP will be aware of all the endpoints data, which might not be needed for DNS proxy.
 
-#### Option 2: Read from bpf maps
+#### Option 2: Read from bpf maps [Recommended]
 
 Read mappings from bpf maps `cilium_lxc` for endpoint ID and `cilium_ipcache` for identity.
 
@@ -191,17 +191,17 @@ Adding a flag in cilium agent to disable built-in dns proxy allows for de-coupli
 
 In an event where SDP restarts when agent's gRPC service is unavailable, SDP can read state from `ep_config.json` and restore policy.
 
-### Indentity for upstream dns pods getting updated
+### Identity for upstream dns pods getting updated
 
 We are sending the set of identities for upstream dns pods along with the dns rules to the SDP through grpc stream. In case the upstream dns pods labels are updated, it will trigger the policy recalculation and the new set of identities will be sent to the SDP. This will help in enforcing the L7 DNS policy for the updated set of identities.
 
-### Scenarios and Expected Behaviour
+### Scenarios and Expected Behavior
 
-In an ideal scenario, both cilium agent and SDP should be interacting with each other through a biredirectional grpc stream. However, in an event where either of them restarts/upgrade/downgrade, what should be the expected behavior ?
+In an ideal scenario, both cilium agent and SDP should be interacting with each other through a bidirectional grpc stream. However, in an event where either of them restarts/upgrade/downgrade, what should be the expected behavior ?
 
 #### Cilium Agent is down, SDP is running
 
-* SDP should be able to proxy requests and enfore L7 DNS policy based on the existing bpf maps and in memory DNS rules. The datapath of already configured policies will work. Any new mappings will not be updated until cilium agent is back up.
+* SDP should be able to proxy requests and enforce L7 DNS policy based on the existing bpf maps and in memory DNS rules. The datapath of already configured policies will work. Any new policy map updates will not be updated until cilium agent is back up.
 * In case SDP restarts while cilium agent is down, the SDP should be able to read the rules from the filesystem and restore them. Since Cilium agent writes the rules to the filesystem lazily, SDP might be reading an outdated DNS rules. This is a limitation of the current implementation and can be improved in future.
 
 #### Cilium Agent is running, SDP is down/restarting
@@ -211,7 +211,7 @@ In an ideal scenario, both cilium agent and SDP should be interacting with each 
 
 #### SDP Upgrade(Given Cilium Agent is Running)
 
-* Cilium agent can keep serving the DNS queries through in built DNS proxy. In case, the inbult dns proxy is disabled, the SDP needs an upgrade path. This can be achieved using the `maxsurge` upgrade.
+* Cilium agent can keep serving the DNS queries through in built DNS proxy. In case, the in-built dns proxy is disabled, the SDP needs an upgrade path. This can be achieved using the `maxsurge` upgrade.
 
 | Agent | Builtin DNS Proxy | SDP | Datapath | DNS |
 |-------|-------------------|-----|----------|-----|
